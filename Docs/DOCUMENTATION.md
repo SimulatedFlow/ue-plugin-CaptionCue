@@ -8,6 +8,50 @@ a Sequencer track, a sound wave with cues or one Blueprint node decides that. Ca
 never overwrites an unread line, a minimum reading time, and the player options a certification checklist
 expects to find in your game's own menu.
 
+### The demo map
+
+Everything below is running in `/CaptionCue/CaptionCue/Maps/L_CaptionCueDemo`. Open it, press Play, and the
+control panel in the top right fires the same Blueprint nodes this document describes: a five-line dialogue
+scene that goes through the queue, closed captions for three off-screen sound sources with their direction
+arrows, and every player option — text scale, background box, speaker names, sound captions, position —
+switched live with no restart. The statistics box in the top left is `CaptionCue.Stats 1`.
+
+The pieces are worth reading in the order a project would build them: `BP_CaptionCueDemoGameMode` sets
+`HUDClass` to `CaptionCue HUD` and nothing else; `BP_CaptionCueSpeaker` registers a speaker and speaks its
+lines; `BP_CaptionCueSoundSource` carries a `CaptionCue Audio Component` and captions a sound at its own
+world position; `WBP_CaptionCueDemoPanel` is the options menu, one node per button. The four styles in
+`/CaptionCue/CaptionCue/Styles/` are registered in the project's `DefaultGame.ini` under
+`[/Script/CaptionCue.CaptionCueSettings]`.
+
+---
+
+## 0. Supported engine and platforms
+
+| | |
+|---|---|
+| **Engine version** | Unreal Engine **5.8** (`"EngineVersion": "5.8.0"` in the `.uplugin`) |
+| **Supported target platforms** | **Win64**, **Mac**, **Linux** — the module's `PlatformAllowList` |
+| **Modules** | One: `CaptionCue`, `Type: Runtime`, `LoadingPhase: PreDefault` |
+| **Source** | Full C++ source included |
+| **Build configurations verified** | Editor Development · Game Development · Game **Shipping** |
+| **Engine module dependencies** | Public: `Core`, `CoreUObject`, `Engine`, `DeveloperSettings`, `SlateCore` · Private: `RenderCore` |
+| **Third-party code** | None |
+| **Other plugin dependencies** | None |
+| **UMG required** | No — there is no `UMG` dependency and no widget to create |
+| **Editor module** | None — nothing in the plugin is editor-only except one `#if WITH_EDITOR` preview hook |
+| **Network replication** | No. Captions are a client-side display; trigger them where the sound plays |
+| **Project type** | C++ **and** Blueprint-only projects. A Blueprint-only project can use every feature — the plugin's own C++ is compiled by the engine's plugin build, not by your project |
+| **Assets shipped** | Demo content under `Content/CaptionCue/` only. No fonts, no textures, no meshes on the draw path |
+
+**Why those three platforms and not more.** Nothing in the plugin is platform-specific — it draws on
+`UCanvas` and measures text with the Slate font measure service, both of which exist everywhere the engine
+does. The list is what has actually been compiled and tested, and Fab requires the `.uplugin` allow-list and
+the store page's "Supported Target Platforms" to agree. Console targets need the corresponding platform
+extension of the engine to build against and are therefore not claimed here.
+
+**Mobile.** Not on the supported list. The draw path itself is platform-neutral, but touch-sized default
+text scales and safe areas have not been tuned or tested, so it is not claimed.
+
 ---
 
 ## 1. Five-minute install
@@ -31,6 +75,56 @@ expects to find in your game's own menu.
 There is no widget to create, no font to import and no asset to author before captions appear: every kind
 of caption has a built-in fallback style, so an install with no configuration still draws something
 sensible.
+
+### Adding CaptionCue to your own HUD, in full
+
+```cpp
+// MyGameHUD.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/HUD.h"
+#include "MyGameHUD.generated.h"
+
+class UCaptionCueHUDComponent;
+
+UCLASS()
+class MYGAME_API AMyGameHUD : public AHUD
+{
+    GENERATED_BODY()
+
+public:
+    AMyGameHUD();
+
+    virtual void DrawHUD() override;
+
+private:
+    UPROPERTY()
+    TObjectPtr<UCaptionCueHUDComponent> Captions;
+};
+```
+
+```cpp
+// MyGameHUD.cpp
+#include "MyGameHUD.h"
+#include "CaptionCueHUDComponent.h"
+
+AMyGameHUD::AMyGameHUD()
+{
+    Captions = CreateDefaultSubobject<UCaptionCueHUDComponent>(TEXT("Captions"));
+}
+
+void AMyGameHUD::DrawHUD()
+{
+    Super::DrawHUD();
+
+    // Your own HUD drawing first; captions last, so nothing draws over them.
+    Captions->DrawCaptions(Canvas);
+}
+```
+
+Add `"CaptionCue"` to your module's `PublicDependencyModuleNames` in `MyGame.Build.cs` for the C++ path.
+Blueprint needs no such step.
 
 ---
 
@@ -59,10 +153,54 @@ widget, no re-created HUD.
 straight to its properties. It is the same object the renderer reads, so there is exactly one source of
 truth and nothing to synchronise.
 
+### The same menu from C++
+
+```cpp
+#include "CaptionCueStatics.h"
+#include "CaptionCueSettings.h"
+
+void UMyOptionsMenu::ApplyAccessibilityPreset()
+{
+    UCaptionCueStatics::SetCaptionsEnabled(true);
+    UCaptionCueStatics::SetTextScale(1.5f);
+    UCaptionCueStatics::SetBackgroundBox(true);
+    UCaptionCueStatics::SetBackgroundOpacity(0.85f);
+    UCaptionCueStatics::SetShowSpeakerNames(true);
+    UCaptionCueStatics::SetShowSoundCaptions(true);   // closed captions, not just subtitles
+    UCaptionCueStatics::SetDirectionIndicators(true);
+}
+
+void UMyOptionsMenu::ReadCurrentValues()
+{
+    // Or go straight to the object the renderer reads. Same values, no copy to keep in step.
+    const UCaptionCueSettings& Settings = UCaptionCueSettings::Get();
+
+    TextScaleSlider->SetValue(Settings.TextScale);
+    BackgroundBoxCheckBox->SetIsChecked(Settings.bBackgroundBox);
+    SoundCaptionsCheckBox->SetIsChecked(Settings.bShowSoundCaptions);
+}
+```
+
 **Persistence.** The setters change the live values only. In a packaged game the `Default*.ini` files are
 read-only, so save the player's choices wherever your game already saves its options — a `UGameUserSettings`
 subclass or a save game — and call the setters again when it loads. `Save Caption Options` writes
 `DefaultGame.ini` and is meant for development, not for a shipped title.
+
+```cpp
+// In your own USaveGame / UGameUserSettings load path:
+void UMySettings::ApplyCaptionOptions() const
+{
+    UCaptionCueSettings* Captions = UCaptionCueSettings::GetMutable();
+
+    Captions->SetTextScale(SavedTextScale);
+    Captions->SetBackgroundBox(bSavedBackgroundBox);
+    Captions->SetBackgroundOpacity(SavedBackgroundOpacity);
+    Captions->SetShowSpeakerNames(bSavedSpeakerNames);
+    Captions->SetShowSoundCaptions(bSavedSoundCaptions);
+    Captions->SetCaptionPosition(SavedPosition);
+    Captions->SetSafeAreaMarginPercent(SavedSafeArea);
+}
+```
 
 ---
 
@@ -80,14 +218,59 @@ subclass or a save game — and call the setters again when it loads. `Save Capt
 | `Register Speaker` | Teach this world an id, a display name and a colour. |
 | `Play Sound With Caption At Location` | Play a sound and caption it in one call, using the sound's own length. |
 
+All of them are `WorldContext` nodes: in a Blueprint they need no target and no subsystem lookup.
+
 ### From C++
 
 ```cpp
-UCaptionCueSubsystem* Captions = GetWorld()->GetSubsystem<UCaptionCueSubsystem>();
+#include "CaptionCueSubsystem.h"
 
-Captions->RegisterSpeaker(TEXT("Guard"), LOCTEXT("Guard", "Guard"), FLinearColor(0.45f, 0.85f, 1.0f));
-Captions->QueueSpeech(LOCTEXT("Halt", "Halt. Who goes there?"), TEXT("Guard"));
-Captions->QueueSoundCaption(LOCTEXT("Creak", "door creaks"), DoorActor->GetActorLocation());
+#define LOCTEXT_NAMESPACE "MyGame"
+
+void AMyGuard::GreetThePlayer()
+{
+    UCaptionCueSubsystem* Captions = GetWorld()->GetSubsystem<UCaptionCueSubsystem>();
+    if (!Captions)
+    {
+        return;
+    }
+
+    // Once, at start-up: an id, the name the player reads, the colour it is written in.
+    Captions->RegisterSpeaker(TEXT("Guard"), LOCTEXT("Guard", "Guard"), FLinearColor(0.45f, 0.85f, 1.0f));
+
+    // A spoken line. Duration 0 lets the reading clock work it out from the text.
+    Captions->QueueSpeech(LOCTEXT("Halt", "Halt. Who goes there?"), TEXT("Guard"));
+
+    // A closed caption for something nobody said. The position gives it a direction arrow.
+    Captions->QueueSoundCaption(LOCTEXT("Creak", "door creaks"), DoorActor->GetActorLocation());
+}
+
+#undef LOCTEXT_NAMESPACE
+```
+
+### Every field spelled out
+
+`FCaptionCueRequest` is the full input shape, and the only field that is not optional is the text:
+
+```cpp
+FCaptionCueRequest Request;
+Request.Text              = LOCTEXT("Alarm", "Intruder alert on deck three.");
+Request.Speaker           = TEXT("Ship");
+Request.SpeakerDisplayName = FText::GetEmpty();       // empty = use the registered name
+Request.Kind              = ECaptionCueKind::System;  // Speech / Sound / Music / System
+Request.Duration          = 0.0f;                     // 0 = derive from the text length
+Request.Priority          = 100;                      // higher wins
+Request.bHasWorldLocation = false;                    // no arrow for a ship-wide announcement
+Request.StyleOverride     = NAME_None;                // None = pick the style by Kind
+
+// Queue it behind whatever is on screen…
+const int32 Id = Captions->QueueCaption(Request);
+
+// …or put it up now, pushing aside a visible line of strictly lower priority.
+const int32 UrgentId = Captions->ShowCaption(Request);
+
+// Either id can be withdrawn again, visible or still waiting.
+Captions->RemoveCaption(Id);
 ```
 
 ### The queue, and why it is a queue
@@ -101,6 +284,10 @@ then it goes back to the front of the queue rather than into the bin — it was 
 
 Promotion order is *highest priority first, and among equals the one that has waited longest*, so two
 captions queued in the same frame always come out in the order they went in.
+
+`Max Queued Captions` (default 32) is the point at which the queue starts refusing new lines rather than
+growing quietly. A game that queues more than that has a scripting problem, and `Total Dropped` in the
+statistics box is how you find it.
 
 ### The reading clock
 
@@ -138,6 +325,15 @@ default (*Project Settings ▸ Plugins ▸ CaptionCue ▸ Engine Bridge*) and `I
 reports whether it is live. The statistics box (`CaptionCue.Stats 1`) shows the same thing plus a count of
 the lines that have come through it.
 
+```cpp
+// Is the engine's subtitle stream actually landing here? Ask, don't assume.
+if (UCaptionCueStatics::IsEngineSubtitleBridgeAttached(this))
+{
+    const FCaptionCueStats Stats = UCaptionCueStatics::GetCaptionStats(this);
+    UE_LOG(LogTemp, Display, TEXT("%d lines have arrived through the bridge"), Stats.TotalFromEngineBridge);
+}
+```
+
 **What the bridge cannot carry, and why.** The delegate passes exactly one thing: the text.
 
 | Missing | What CaptionCue does instead |
@@ -155,6 +351,10 @@ that has been up for half a second still gets its full reading time.
 `UGameViewportClient::Draw`, so bridged lines arrive during play (PIE or packaged) — not in an editor
 viewport with nothing playing. Captions queued through the plugin's own API *do* appear there; see §8.
 
+**Switching it off.** Clear *Bridge Engine Subtitles* in the project settings and the engine goes back to
+drawing its own line. `Engine Bridge Kind` and `Engine Bridge Priority` decide which style bridged lines get
+and where they sit in the queue.
+
 ### The richer path: CaptionCue Audio Component
 
 For sounds you own, use **CaptionCue Audio Component** (a `UAudioComponent` subclass) instead. It binds
@@ -168,8 +368,37 @@ That gives you three things the process-wide bridge cannot:
   *Caption Override* and the component queues that line when the sound starts — which is how you caption a
   door, a reload or a distant explosion without editing every wave in the project.
 
+```cpp
+#include "CaptionCueAudioComponent.h"
+
+AMyDoor::AMyDoor()
+{
+    Creak = CreateDefaultSubobject<UCaptionCueAudioComponent>(TEXT("Creak"));
+    Creak->SetupAttachment(RootComponent);
+    Creak->bAutoActivate       = false;
+    Creak->CaptionKind         = ECaptionCueKind::Sound;   // bracketed, and allowed an arrow
+    Creak->bUseComponentLocation = true;                   // this is what earns the arrow
+    Creak->CaptionOverride     = LOCTEXT("DoorCreak", "door creaks");
+}
+
+void AMyDoor::Open()
+{
+    // Sound and caption in one call, so they cannot get out of step.
+    Creak->PlayWithCaption();
+}
+```
+
 Binding `OnQueueSubtitles` means this component's cues no longer reach the engine subtitle manager. That is
 intended: it is what stops the same line being drawn twice.
+
+For a one-off sound that does not need a component of its own, the same thing in a single node:
+
+```cpp
+UCaptionCueStatics::PlaySoundWithCaptionAtLocation(
+    this, ExplosionSound, ExplosionLocation,
+    LOCTEXT("DistantExplosion", "distant explosion"),
+    ECaptionCueKind::Sound);
+```
 
 ---
 
@@ -196,6 +425,20 @@ not get one if the player has switched boxes off. Accessibility options are not 
 **Fonts.** No font ships with CaptionCue, for licensing reasons. Leave a style's `Font` empty and it uses
 your project's subtitle font (`Engine ▸ Fonts ▸ Subtitle Font`), falling back to the engine's own Roboto.
 Both are present in every install.
+
+### Asking for a style by name
+
+```cpp
+FCaptionCueRequest Request;
+Request.Text          = LOCTEXT("Whisper", "…don't move.");
+Request.Speaker       = TEXT("Mara");
+Request.StyleOverride = TEXT("Whisper");   // a CaptionCue Style whose Style Name is "Whisper"
+
+Captions->QueueCaption(Request);
+```
+
+Names, not asset references, so gameplay code never hard-references a UI asset. `Get Style Names` lists what
+this world knows about, and `Refresh Styles` re-reads the list after a style asset has been edited.
 
 ### Speaker formats
 
@@ -252,7 +495,13 @@ The usual pattern, and the one the demo uses:
 1. **Content Browser ▸ Miscellaneous ▸ String Table**, e.g. `ST_Dialogue`, with keys like `Guard_Halt`.
 2. In Blueprint, drag off the caption's `Text` pin and choose **Make Literal Text ▸ String Table Entry**, or
    set the text pin to *Referenced Text* and pick the table and key.
-3. In C++: `FText::FromStringTable(TEXT("/Game/Dialogue/ST_Dialogue.ST_Dialogue"), TEXT("Guard_Halt"))`.
+3. In C++:
+   ```cpp
+   const FText Line = FText::FromStringTable(
+       TEXT("/Game/Dialogue/ST_Dialogue.ST_Dialogue"), TEXT("Guard_Halt"));
+
+   Captions->QueueSpeech(Line, TEXT("Guard"));
+   ```
 4. Gather with **Window ▸ Localization Dashboard** as usual. Nothing about CaptionCue is special here — that
    is the point of using `FText` throughout.
 
@@ -318,7 +567,7 @@ accessibility preset and off in the standard one, and never ship with `MinSecond
 
 ---
 
-## 11. Reference
+## 11. API reference
 
 ### Classes
 
@@ -333,20 +582,161 @@ accessibility preset and off in the standard one, and never ship with `MinSecond
 | `UCaptionCueStatics` | Blueprint function library: showing captions, and the options menu. |
 | `FCaptionCueSubtitleBridge` | The connection to `FSubtitleManager::OnSetSubtitleText`. Not a `UObject`. |
 
+### `UCaptionCueStatics` — the Blueprint library
+
+Every node below is static and needs no target. Nodes marked *(world)* take a hidden world context that
+Blueprint fills in automatically.
+
+**Showing captions**
+
+| Function | Signature |
+|---|---|
+| `ShowSubtitle` *(world)* | `int32 (const FText& Text, FName Speaker, float Duration = 0, int32 Priority = 0)` |
+| `ShowSoundCaption` *(world)* | `int32 (const FText& Text, FVector WorldLocation, bool bHasWorldLocation = true, float Duration = 0, int32 Priority = 0)` |
+| `ShowCaptionFromRequest` *(world)* | `int32 (const FCaptionCueRequest& Request)` |
+| `ShowCaptionNow` *(world)* | `int32 (const FCaptionCueRequest& Request)` |
+| `ClearCaptions` *(world)* | `void ()` |
+| `RegisterSpeaker` *(world)* | `void (FName SpeakerId, const FText& DisplayName, FLinearColor Color)` |
+| `PlaySoundWithCaptionAtLocation` *(world)* | `void (USoundBase* Sound, FVector Location, const FText& Caption, ECaptionCueKind Kind = Sound, FName Speaker = None, int32 Priority = 0)` |
+
+**Options**
+
+| Function | Signature |
+|---|---|
+| `GetCaptionSettings` | `UCaptionCueSettings* ()` |
+| `SetCaptionsEnabled` | `void (bool bEnabled)` |
+| `SetTextScale` / `GetTextScale` | `void (float)` / `float ()` |
+| `SetBackgroundBox` / `IsBackgroundBoxEnabled` | `void (bool)` / `bool ()` |
+| `SetBackgroundOpacity` | `void (float Opacity)` — `[0,1]` |
+| `SetShowSpeakerNames` / `AreSpeakerNamesShown` | `void (bool)` / `bool ()` |
+| `SetShowSoundCaptions` / `AreSoundCaptionsShown` | `void (bool)` / `bool ()` |
+| `SetMaxLineWidthPercent` | `void (float Percent)` — `[0.2, 1.0]` |
+| `SetSafeAreaMarginPercent` | `void (float Percent)` — `[0.0, 0.25]` |
+| `SetCaptionPosition` | `void (ECaptionCuePosition)` |
+| `SetMaxVisibleLines` | `void (int32)` — `[1, 8]` |
+| `SetDirectionIndicators` | `void (bool)` |
+| `SetMinSecondsPerCharacter` | `void (float)` — `[0.0, 0.5]` |
+
+**Access**
+
+| Function | Signature |
+|---|---|
+| `GetCaptionSubsystem` *(world)* | `UCaptionCueSubsystem* ()` — may be null outside a world |
+| `GetCaptionStats` *(world)* | `FCaptionCueStats ()` |
+| `IsEngineSubtitleBridgeAttached` *(world)* | `bool ()` |
+
+### `UCaptionCueSubsystem`
+
+| Function | Signature | Notes |
+|---|---|---|
+| `QueueCaption` | `int32 (const FCaptionCueRequest&)` | Returns the caption id, or **0** when refused (captions off, empty text, sound captions off, queue full) |
+| `QueueSpeech` | `int32 (const FText&, FName Speaker, float Duration = 0, int32 Priority = 0)` | |
+| `QueueSoundCaption` | `int32 (const FText&, FVector, bool bHasWorldLocation = true, float Duration = 0, int32 Priority = 0)` | |
+| `ShowCaption` | `int32 (const FCaptionCueRequest&)` | Displaces a visible line of *strictly lower* priority; the displaced line returns to the front of the queue |
+| `ClearCaptions` | `void ()` | |
+| `RemoveCaption` | `bool (int32 CaptionId)` | Visible or still waiting |
+| `RegisterSpeaker` | `void (FName, const FText&, FLinearColor)` | Runtime registrations win over the project list |
+| `UnregisterSpeaker` | `void (FName)` | |
+| `ResolveSpeaker` | `FCaptionCueSpeaker (FName)` | |
+| `DrawCaptions` | `void (UCanvas*)` | The whole renderer. Call from `DrawHUD` |
+| `GetStats` | `const FCaptionCueStats& ()` | |
+| `GetVisibleCount` / `GetPendingCount` | `int32 ()` | |
+| `GetVisibleCaptionText` | `FText (int32 Index)` | Top line first; empty when out of range |
+| `SetShowStats` / `IsShowingStats` | `void (bool)` / `bool ()` | |
+| `IsEngineBridgeAttached` | `bool ()` | |
+| `GetStyleByName` | `UCaptionCueStyle* (FName)` | Null when unknown |
+| `GetStyleForKind` | `UCaptionCueStyle* (ECaptionCueKind)` | Never null — falls back to a built-in |
+| `GetStyleNames` | `TArray<FName> ()` | |
+| `RefreshStyles` | `void ()` | Re-read the style list from the settings |
+| `PlayTestScene` | `void ()` | What `CaptionCue.Test` runs |
+
+### `UCaptionCueSettings`
+
+Reachable as `UCaptionCueSettings::Get()` (const) and `::GetMutable()`, from Blueprint as
+`Get Caption Settings`, and in the editor under *Project Settings ▸ Plugins ▸ CaptionCue*.
+
+| Property | Type | Default | Group |
+|---|---|---|---|
+| `bCaptionsEnabled` | `bool` | `true` | Player Options |
+| `TextScale` | `float` `[0.25, 4.0]` | `1.0` | Player Options |
+| `bBackgroundBox` | `bool` | `true` | Player Options |
+| `BackgroundOpacity` | `float` `[0, 1]` | `0.65` | Player Options |
+| `bShowSpeakerNames` | `bool` | `true` | Player Options |
+| `bShowSoundCaptions` | `bool` | `true` | Player Options |
+| `MaxLineWidthPercent` | `float` `[0.2, 1.0]` | `0.6` | Player Options |
+| `SafeAreaMarginPercent` | `float` `[0, 0.25]` | `0.05` | Player Options |
+| `Position` | `ECaptionCuePosition` | `Bottom` | Player Options |
+| `MaxVisibleLines` | `int32` `[1, 8]` | `3` | Player Options |
+| `bDirectionIndicators` | `bool` | `true` | Player Options |
+| `MinSecondsPerCharacter` | `float` `[0, 0.5]` | `0.06` | Reading Time |
+| `MinDisplaySeconds` | `float` `[0, 10]` | `1.2` | Reading Time |
+| `MaxDisplaySeconds` | `float` `[1, 120]` | `12.0` | Reading Time |
+| `MaxQueuedCaptions` | `int32` `[1, 256]` | `32` | Reading Time |
+| `Styles` | `TArray<TSoftObjectPtr<UCaptionCueStyle>>` | empty | Styles |
+| `Speakers` | `TArray<FCaptionCueSpeaker>` | empty | Speakers |
+| `bAutoColorUnknownSpeakers` | `bool` | `true` | Speakers |
+| `bBridgeEngineSubtitles` | `bool` | `true` | Engine Bridge |
+| `EngineBridgeKind` | `ECaptionCueKind` | `Speech` | Engine Bridge |
+| `EngineBridgePriority` | `int32` | `0` | Engine Bridge |
+| `bEnableEditorPreview` | `bool` | `true` | Editor |
+| `bShowStatsByDefault` | `bool` | `false` | Debug |
+
+Setters: `SetCaptionsEnabled`, `SetTextScale`, `SetBackgroundBox`, `SetBackgroundOpacity`,
+`SetShowSpeakerNames`, `SetShowSoundCaptions`, `SetMaxLineWidthPercent`, `SetSafeAreaMarginPercent`,
+`SetCaptionPosition`, `SetMaxVisibleLines`, `SetMinSecondsPerCharacter`, `SetMinDisplaySeconds`,
+`SetDirectionIndicators`, `SaveCaptionOptions`.
+
+### `UCaptionCueStyle`
+
+| Group | Properties |
+|---|---|
+| Identity | `StyleName`, `Kind` |
+| Text | `Font` (empty = engine subtitle font), `FontSize` (26), `LineSpacing` (2), `Justification` (Center), `TextColor`, `OutlineSize` (2), `OutlineColor`, `bDrawShadow`, `ShadowOffset`, `ShadowColor` |
+| Speaker | `SpeakerFormat` (Colon), `DefaultSpeakerColor`, `bTintLineWithSpeakerColor` |
+| Non-Speech | `Prefix`, `Suffix` — `[` and `]` on the Sound Effect style |
+| Background | `bBackgroundBox`, `BackgroundColor`, `BackgroundPadding` (14, 6), `bBoxPerLine` |
+| Timing | `FadeInSeconds` (0.08), `FadeOutSeconds` (0.25) |
+| Direction | `bAllowDirectionIndicator`, `DirectionIndicatorColor`, `DirectionIndicatorSize` (26) |
+
+### `UCaptionCueAudioComponent`
+
+| Property / Function | Type | Default |
+|---|---|---|
+| `bCaptionsEnabled` | `bool` | `true` |
+| `CaptionSpeaker` | `FName` | `None` |
+| `CaptionKind` | `ECaptionCueKind` | `Speech` |
+| `CaptionPriority` | `int32` | `0` |
+| `bUseComponentLocation` | `bool` | `true` |
+| `CaptionOverride` | `FText` | empty |
+| `bCaptionOnPlay` | `bool` | `true` |
+| `PlayWithCaption` | `void (float StartTime = 0)` | |
+| `QueueOverrideCaption` | `int32 ()` | |
+
+### `ACaptionCueHUD` / `UCaptionCueHUDComponent`
+
+`ACaptionCueHUD` has one property, `bDrawCaptions` (default `true`); switch it off and the class behaves
+like a plain `AHUD`. `UCaptionCueHUDComponent` has one function, `DrawCaptions(UCanvas*)`.
+
 ### Types
 
-`ECaptionCueKind` — `Speech`, `Sound`, `Music`, `System`
-`ECaptionCuePosition` — `Bottom`, `Top`
-`ECaptionCueJustify` — `Left`, `Center`, `Right`
-`ECaptionCueSpeakerFormat` — `Colon`, `Brackets`, `Dash`, `OwnLine`, `None`
-`FCaptionCueRequest` — the input struct: text, speaker, kind, duration, priority, world location, style override
-`FCaptionCueSpeaker` — id, display name, colour
-`FCaptionCueStats` — visible, pending, totals, arrows drawn, draw milliseconds
+| Type | Contents |
+|---|---|
+| `ECaptionCueKind` | `Speech`, `Sound` (displayed as *Sound Effect*), `Music`, `System` |
+| `ECaptionCuePosition` | `Bottom`, `Top` |
+| `ECaptionCueJustify` | `Left`, `Center`, `Right` |
+| `ECaptionCueSpeakerFormat` | `Colon`, `Brackets`, `Dash`, `OwnLine`, `None` |
+| `FCaptionCueRequest` | `Text`, `Speaker`, `SpeakerDisplayName`, `Kind`, `Duration`, `Priority`, `bHasWorldLocation`, `WorldLocation`, `StyleOverride` |
+| `FCaptionCueSpeaker` | `SpeakerId`, `DisplayName`, `Color` |
+| `FCaptionCueStats` | `Visible`, `Pending`, `TotalQueued`, `TotalFromEngineBridge`, `TotalDisplaced`, `TotalDropped`, `ArrowsDrawn`, `DrawMs` |
+
+`ECaptionCueJustify` is CaptionCue's own rather than Slate's `ETextJustify`: that enum's reflection data
+lives in the `Slate` module, and a runtime module that has to survive a cooked Shipping build has no business
+pulling in the whole widget framework to describe "centre this line".
 
 ### Module
 
 One runtime module, `LoadingPhase: PreDefault`, `PlatformAllowList: Win64, Mac, Linux`.
-Dependencies: `Core`, `CoreUObject`, `Engine`, `DeveloperSettings`, `SlateCore`, `RenderCore`.
+Public dependencies: `Core`, `CoreUObject`, `Engine`, `DeveloperSettings`, `SlateCore`. Private: `RenderCore`.
 **No `UMG` dependency, no `UnrealEd`, no third-party libraries.** Everything on the draw path exists in a
 cooked Shipping build; the plugin is built and verified for Editor Development, Game Development and Game
 Shipping.
@@ -364,6 +754,8 @@ Shipping.
   words is not something a plugin can do for you.
 * **No guarantee of certification.** §10 is a mapping from common requirements to settings, nothing more.
 * **No font shipped**, for licensing reasons — the engine's subtitle font is used instead.
+* **Not replicated.** Captions are a client-side display. Trigger them on the machine that is going to read
+  them; a server-side `Show Subtitle` shows nobody anything.
 * **The engine bridge carries text only** (§4). Duration, speaker and position are not in the delegate; use
   `UCaptionCueAudioComponent` or the direct API when you need them.
 * **Bridged engine subtitles do not appear in an editor viewport without play mode**, because the engine
@@ -372,3 +764,22 @@ Shipping.
   layout pass per caption, and one draw path that behaves identically in the editor and in a cooked build.
   If you need captions inside a UMG widget hierarchy (for a 3D world-space screen, say), CaptionCue is not
   the tool.
+* **Win64, Mac and Linux only** (§0). Nothing in the code is platform-specific, but only those three have
+  been built and tested, and only those three are claimed.
+
+---
+
+## 13. Troubleshooting
+
+| Symptom | Cause and cure |
+|---|---|
+| Nothing draws at all | No HUD is calling the renderer. Set the Game Mode's *HUD Class* to **CaptionCue HUD**, or call `Draw Captions (Canvas)` from your own `DrawHUD` (§1). |
+| `Show Subtitle` returns 0 | The caption was refused: captions switched off, empty text, a `Sound`/`Music` caption while *Show Sound Captions* is off, or the queue at `MaxQueuedCaptions`. `CaptionCue.Stats 1` shows which. |
+| Lines vanish too quickly | The reading clock is doing what it was told. Raise `MinSecondsPerCharacter` or `MinDisplaySeconds` (§3). |
+| Two lines fired together, only one shows | Working as intended — the second is queued behind the first and appears when a slot frees. `Pending` in the statistics box counts them. |
+| Sound waves with subtitle cues still draw the engine's plain line | The engine bridge is off. Switch on *Project Settings ▸ Plugins ▸ CaptionCue ▸ Bridge Engine Subtitles*, and check `Is Engine Subtitle Bridge Attached` (§4). |
+| Bridged lines have no speaker or arrow | The engine's delegate carries text only. Use `CaptionCue Audio Component` or the direct API (§4). |
+| No direction arrow | Three switches have to agree: the player option `Direction Indicators`, the style's `Allow Direction Indicator` (off on Speech by design), and the caption's `bHasWorldLocation`. The source also has to be *outside* the safe area. |
+| Captions are cut off at the screen edge on a television | Raise `SafeAreaMarginPercent` (§10). |
+| A style edit does not show up | Call `Refresh Styles`, or check the asset is listed in *Project Settings ▸ Plugins ▸ CaptionCue ▸ Styles*. |
+| Nothing in the editor viewport without play | *Editor Preview* is off, or you are expecting bridged engine subtitles — those need a game viewport (§8). |

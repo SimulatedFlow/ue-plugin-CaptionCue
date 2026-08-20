@@ -114,5 +114,5 @@ Nothing to author first. No widget to build. No font to import.
 
 ---
 
-**Engine:** 5.8 · **Platforms:** Win64, Mac, Linux · **Modules:** one runtime C++ module, full source ·
+**Engine:** 5.8 · **Platforms:** Win64 — built and verified with `RunUAT BuildPlugin` for this release; Mac and Linux are allow-listed in the `.uplugin` and the code contains nothing platform-specific, but they were not built here and are therefore not claimed as supported · **Modules:** one runtime C++ module, full source ·
 **Dependencies:** none beyond the engine · **Network Replicated:** No (captions are a client-side display)
